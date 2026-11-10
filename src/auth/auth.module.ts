@@ -10,6 +10,7 @@ import { PregnancyProfile, PregnancyProfileSchema } from '../pregnancy/schemas/p
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { CryptoModule } from '../common/crypto/crypto.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { JwtStrategy } from './jwt.strategy';
         },
       }),
     }),
+    CryptoModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

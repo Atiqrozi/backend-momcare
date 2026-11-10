@@ -29,6 +29,7 @@ import { ChildProfile, ChildProfileSchema } from './schemas/child-profile.schema
 import { ChildGrowthRecord, ChildGrowthRecordSchema } from './schemas/child-growth-record.schema';
 import { ChildImmunization, ChildImmunizationSchema } from './schemas/child-immunization.schema';
 import { AppointmentSlotReservation, AppointmentSlotReservationSchema } from '../chat/schemas/appointment-slot-reservation.schema';
+import { CryptoModule } from '../common/crypto/crypto.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { AppointmentSlotReservation, AppointmentSlotReservationSchema } from '..
       { name: ChildImmunization.name, schema: ChildImmunizationSchema },
       { name: AppointmentSlotReservation.name, schema: AppointmentSlotReservationSchema },
     ]),
+    CryptoModule,
   ],
   controllers: [PregnancyController, LegacyPregnancyController],
   providers: [PregnancyService],

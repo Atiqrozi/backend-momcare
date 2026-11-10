@@ -55,6 +55,7 @@ import {
 import { getRequestId } from '../common/request-context';
 import { calculateEstimatedDueDate } from '../common/estimated-due-date';
 import { AppointmentSlotReservation, AppointmentSlotReservationDocument } from '../chat/schemas/appointment-slot-reservation.schema';
+import { EncryptionService } from '../common/crypto/encryption.service';
 
 @Injectable()
 export class PregnancyService {
@@ -85,16 +86,19 @@ export class PregnancyService {
     private readonly facilityModel: Model<FacilityDocument>,
     @InjectModel(AppointmentSlotReservation.name)
     private readonly slotReservationModel: Model<AppointmentSlotReservationDocument>,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async getProfile(userId: string) {
-    return this.profileModel.findOne({ userId: this.objectId(userId) }).lean();
+    const profile = await this.profileModel.findOne({ userId: this.objectId(userId) }).lean();
+    return this.decryptNik(profile);
   }
 
   async getTimeline(user: AuthenticatedUser, requestedPatientId?: string) {
     const patientId = await this.resolvePatientId(user, requestedPatientId);
     const profile = await this.profileModel.findOne({ userId: patientId }).lean();
-    if (!profile) return { profile: null, currentWeek: null, events: [] };
+    const decryptedProfile = this.decryptNik(profile);
+    if (!decryptedProfile) return { profile: null, currentWeek: null, events: [] };
 
     const [journals, medicalRecords, vaccinations, appointments] = await Promise.all([
       this.journalModel.find({ patientId }).sort({ entryDate: 1 }).lean(),
@@ -102,8 +106,8 @@ export class PregnancyService {
       this.vaccinationModel.find({ patientId }).sort({ scheduledDate: 1 }).lean(),
       this.appointmentModel.find({ patientId }).sort({ scheduledAt: 1 }).lean(),
     ]);
-    const currentWeek = profile.lmpDate
-      ? Math.max(0, Math.floor((Date.now() - profile.lmpDate.getTime()) / (7 * 24 * 60 * 60 * 1000)))
+    const currentWeek = decryptedProfile.lmpDate
+      ? Math.max(0, Math.floor((Date.now() - decryptedProfile.lmpDate.getTime()) / (7 * 24 * 60 * 60 * 1000)))
       : null;
     const events = [
       ...journals.map((item) => ({ type: 'journal', date: item.entryDate, data: item })),
@@ -122,11 +126,16 @@ export class PregnancyService {
   }
 
   async upsertProfile(userId: string, dto: UpsertPregnancyProfileDto) {
+    const update: Record<string, unknown> = { ...dto };
+    if (dto.nik !== undefined) {
+      update.nikEncrypted = this.encryptionService.encrypt(dto.nik);
+      delete update.nik;
+    }
     const profile = await this.profileModel.findOneAndUpdate(
       { userId: this.objectId(userId) },
       {
         $set: {
-          ...dto,
+          ...update,
           ...(dto.lmpDate ? { lmpDate: new Date(dto.lmpDate) } : {}),
           ...(dto.estimatedDueDate
             ? { estimatedDueDate: new Date(dto.estimatedDueDate) }
@@ -853,5 +862,16 @@ export class PregnancyService {
       requestId: getRequestId(),
       metadata: { patientId },
     });
+  }
+
+  private decryptNik<T extends { nikEncrypted?: string; _decryptedNik?: string }>(profile: T | null): T | null {
+    if (profile && profile.nikEncrypted) {
+      try {
+        profile._decryptedNik = this.encryptionService.decrypt(profile.nikEncrypted);
+      } catch {
+        profile._decryptedNik = '[DEKRIPSI GAGAL]';
+      }
+    }
+    return profile;
   }
 }

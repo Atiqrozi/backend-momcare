@@ -25,6 +25,7 @@ import { RiskAssessment, RiskAssessmentDocument } from '../risk-assessments/sche
 import { LaborBagDeliveryType, LaborBagEntry, LaborBagEntryDocument } from './schemas/labor-bag.schema';
 import { calculateEstimatedDueDate } from '../common/estimated-due-date';
 import { UpsertLaborBagDto } from './dto/upsert-labor-bag.dto';
+import { EncryptionService } from '../common/crypto/encryption.service';
 
 type DateRange = { $gte?: Date; $lte?: Date };
 
@@ -75,19 +76,39 @@ export class DashboardService {
     @InjectModel(AuditLog.name) private readonly auditModel: Model<AuditLogDocument>,
     @InjectModel(RiskAssessment.name) private readonly riskAssessmentModel: Model<RiskAssessmentDocument>,
     @InjectModel(LaborBagEntry.name) private readonly laborBagModel: Model<LaborBagEntryDocument>,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async laborBag(user: AuthenticatedUser): Promise<LaborBagResponse> {
     const patientIds = await this.getPatientIds(user);
-    const [entries, profiles, patients] = await Promise.all([
+    const [entries, profiles, patients, providers] = await Promise.all([
       this.laborBagModel.find({ patientId: { $in: patientIds } }).sort({ estimatedDueDate: 1 }).lean(),
       this.profileModel.find({ userId: { $in: patientIds } }).lean(),
-      this.userModel.find({ _id: { $in: patientIds }, role: Role.PREGNANT_MOTHER }).select('_id fullName').lean(),
+      this.userModel.find({ _id: { $in: patientIds }, role: Role.PREGNANT_MOTHER }).select('_id fullNameEncrypted').lean(),
+      this.userModel.find({ role: Role.DOCTOR, status: 'ACTIVE' }).select('_id fullNameEncrypted').sort({ fullNameEncrypted: 1 }).lean(),
     ]);
-    const patientMap = new Map(patients.map((patient) => [patient._id.toString(), patient]));
-    const providers = await this.userModel.find({ role: Role.DOCTOR, status: 'ACTIVE' }).select('_id fullName').sort({ fullName: 1 }).lean();
-    const candidates = patients.map((person) => {
-      const profile = profiles.find((item) => item.userId.equals(person._id));
+
+    // Decrypt patient fullNames
+    const decryptedPatients = patients.map(p => ({
+      ...p,
+      fullName: p.fullNameEncrypted ? this.encryptionService.decrypt(p.fullNameEncrypted) : '[DEKRIPSI GAGAL]'
+    }));
+
+    // Decrypt provider fullNames
+    const decryptedProviders = providers.map(p => ({
+      ...p,
+      fullName: p.fullNameEncrypted ? this.encryptionService.decrypt(p.fullNameEncrypted) : '[DEKRIPSI GAGAL]'
+    }));
+
+    // Decrypt NIK in profiles
+    const decryptedProfiles = profiles.map(p => ({
+      ...p,
+      nik: p.nikEncrypted ? this.encryptionService.decrypt(p.nikEncrypted) : undefined
+    }));
+
+    const patientMap = new Map(decryptedPatients.map((patient) => [patient._id.toString(), patient]));
+    const candidates = decryptedPatients.map((person) => {
+      const profile = decryptedProfiles.find((item) => item.userId.equals(person._id));
       return {
         patientId: person._id.toString(),
         fullName: person.fullName,
@@ -96,7 +117,7 @@ export class DashboardService {
         insuranceType: profile?.insuranceType ?? 'BPJS',
         estimatedDueDate: profile?.estimatedDueDate,
         lmpDate: profile?.lmpDate,
-        assignedProviders: providers.map((provider) => ({ id: provider._id.toString(), fullName: provider.fullName })),
+        assignedProviders: decryptedProviders.map((provider) => ({ id: provider._id.toString(), fullName: provider.fullName })),
       };
     });
     return {
@@ -106,10 +127,10 @@ export class DashboardService {
         patientId: entry.patientId.toString(),
         providerId: entry.providerId.toString(),
         patientName: patientMap.get(entry.patientId.toString())?.fullName ?? 'Pasien',
-        providerName: providers.find((provider) => provider._id.equals(entry.providerId))?.fullName ?? 'Dokter tidak tersedia',
+        providerName: decryptedProviders.find((provider) => provider._id.equals(entry.providerId))?.fullName ?? 'Dokter tidak tersedia',
       })),
       patients: candidates,
-      providers: providers.map((provider) => ({ id: provider._id.toString(), fullName: provider.fullName })),
+      providers: decryptedProviders.map((provider) => ({ id: provider._id.toString(), fullName: provider.fullName })),
     };
   }
 

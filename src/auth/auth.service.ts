@@ -25,6 +25,7 @@ import { AuditLog, AuditLogDocument } from '../users/schemas/audit-log.schema';
 import { getRequestId } from '../common/request-context';
 import { calculateEstimatedDueDate } from '../common/estimated-due-date';
 import { PregnancyProfile, PregnancyProfileDocument } from '../pregnancy/schemas/pregnancy-profile.schema';
+import { EncryptionService } from '../common/crypto/encryption.service';
 
 @Injectable()
 export class AuthService {
@@ -34,6 +35,7 @@ export class AuthService {
     @InjectModel(PregnancyProfile.name) private readonly profileModel: Model<PregnancyProfileDocument>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -48,7 +50,7 @@ export class AuthService {
     const rounds = this.configService.get<number>('passwordHashRounds', 12);
     const passwordHash = await bcrypt.hash(dto.password, rounds);
     const user = await this.userModel.create({
-      fullName: dto.fullName,
+      fullNameEncrypted: this.encryptionService.encrypt(dto.fullName),
       email,
       ...(dto.phone ? { phone: this.normalizePhone(dto.phone) } : {}),
       passwordHash,
@@ -60,11 +62,13 @@ export class AuthService {
       emailVerified: false,
       phoneVerified: false,
     });
+    // Set decrypted name for immediate use (e.g., in verification email)
+    (user as UserDocument)._decryptedFullName = dto.fullName;
 
     try {
       await this.profileModel.create({
         userId: user._id,
-        nik: dto.nik,
+        nikEncrypted: this.encryptionService.encrypt(dto.nik),
         insuranceType: dto.insuranceType,
         ...(dto.insuranceType === 'BPJS' ? { bpjsNumber: dto.bpjsNumber } : {}),
         birthplace: dto.birthplace,
@@ -128,8 +132,23 @@ export class AuthService {
     return { user: this.toPublicUser(user) };
   }
 
+  private decryptFullName(user: UserDocument): UserDocument {
+    if (user.fullNameEncrypted) {
+      try {
+        (user as UserDocument)._decryptedFullName = this.encryptionService.decrypt(user.fullNameEncrypted);
+      } catch {
+        (user as UserDocument)._decryptedFullName = '[DEKRIPSI GAGAL]';
+      }
+    }
+    return user;
+  }
+
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const update: Record<string, unknown> = { ...dto };
+    if (dto.fullName !== undefined) {
+      update.fullNameEncrypted = this.encryptionService.encrypt(dto.fullName);
+      delete update.fullName;
+    }
     if (dto.phone !== undefined) {
       update.phone = this.normalizePhone(dto.phone);
       update.phoneVerified = false;
@@ -240,16 +259,17 @@ export class AuthService {
 
   toPublicUser(user: UserDocument | AuthenticatedUser) {
     if ('_id' in user) {
+      const decryptedUser = this.decryptFullName(user);
       return {
-        id: user._id.toString(),
-        fullName: user.fullName,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        status: user.status,
-        consentGranted: user.consentGranted,
-        emailVerified: user.emailVerified,
-        phoneVerified: user.phoneVerified,
+        id: decryptedUser._id.toString(),
+        fullName: decryptedUser.fullName,
+        email: decryptedUser.email,
+        phone: decryptedUser.phone,
+        role: decryptedUser.role,
+        status: decryptedUser.status,
+        consentGranted: decryptedUser.consentGranted,
+        emailVerified: decryptedUser.emailVerified,
+        phoneVerified: decryptedUser.phoneVerified,
       };
     }
     return user;

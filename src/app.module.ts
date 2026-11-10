@@ -30,6 +30,7 @@ import { ChatModule } from "./chat/chat.module";
         PORT: Joi.number().port().default(3000),
         MONGODB_URI: Joi.string().required(),
         JWT_ACCESS_SECRET: Joi.string().min(32).required(),
+        ENCRYPTION_MASTER_KEY: Joi.string().min(32).required(),
         IMAGEKIT_PUBLIC_KEY: Joi.string().optional(),
         IMAGEKIT_PRIVATE_KEY: Joi.string().optional(),
         IMAGEKIT_URL_ENDPOINT: Joi.string().uri().optional(),

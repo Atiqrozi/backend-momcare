@@ -10,6 +10,9 @@ export default () => ({
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '1h',
   },
   passwordHashRounds: Number(process.env.PASSWORD_HASH_ROUNDS ?? 12),
+  encryption: {
+    masterKey: process.env.ENCRYPTION_MASTER_KEY,
+  },
   email: {
     smtpHost: process.env.SMTP_HOST,
     smtpPort: Number(process.env.SMTP_PORT ?? 587),

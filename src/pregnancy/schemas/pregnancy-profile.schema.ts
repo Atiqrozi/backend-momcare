@@ -12,8 +12,8 @@ export class PregnancyProfile {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true, unique: true })
   userId!: Types.ObjectId;
 
-  @Prop({ trim: true, match: /^\d{16}$/ })
-  nik?: string;
+  @Prop({ trim: true, maxlength: 500, select: false })
+  nikEncrypted?: string;
 
   @Prop({ enum: ['BPJS', 'UMUM'], default: 'BPJS' })
   insuranceType!: 'BPJS' | 'UMUM';
@@ -56,7 +56,19 @@ export class PregnancyProfile {
 
   @Prop({ type: Types.ObjectId, ref: 'Facility' })
   facilityId?: Types.ObjectId;
+
+  get nik(): string | undefined {
+    return (this as unknown as PregnancyProfileDocument)._decryptedNik;
+  }
+
+  set nik(value: string | undefined) {
+    (this as unknown as PregnancyProfileDocument)._plainNik = value;
+  }
 }
 
-export type PregnancyProfileDocument = HydratedDocument<PregnancyProfile>;
+export type PregnancyProfileDocument = HydratedDocument<PregnancyProfile> & {
+  _plainNik?: string;
+  _decryptedNik?: string;
+};
+
 export const PregnancyProfileSchema = SchemaFactory.createForClass(PregnancyProfile);

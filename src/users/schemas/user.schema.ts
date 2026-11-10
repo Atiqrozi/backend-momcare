@@ -17,8 +17,8 @@ export enum AccountStatus {
 
 @Schema({ timestamps: true, collection: 'users' })
 export class User {
-  @Prop({ required: true, trim: true, maxlength: 120 })
-  fullName!: string;
+  @Prop({ required: true, trim: true, maxlength: 500, select: false })
+  fullNameEncrypted!: string;
 
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email!: string;
@@ -64,7 +64,19 @@ export class User {
 
   @Prop({ type: Date })
   consentGrantedAt?: Date;
+
+  get fullName(): string {
+    return (this as unknown as UserDocument)._decryptedFullName ?? '';
+  }
+
+  set fullName(value: string) {
+    (this as unknown as UserDocument)._plainFullName = value;
+  }
 }
 
-export type UserDocument = HydratedDocument<User>;
+export type UserDocument = HydratedDocument<User> & {
+  _plainFullName?: string;
+  _decryptedFullName?: string;
+};
+
 export const UserSchema = SchemaFactory.createForClass(User);

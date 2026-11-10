@@ -11,6 +11,7 @@ import { RiskAssessment, RiskAssessmentSchema } from '../risk-assessments/schema
 import { LaborBagEntry, LaborBagEntrySchema } from './schemas/labor-bag.schema';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
+import { CryptoModule } from '../common/crypto/crypto.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { DashboardService } from './dashboard.service';
       { name: RiskAssessment.name, schema: RiskAssessmentSchema },
       { name: LaborBagEntry.name, schema: LaborBagEntrySchema },
     ]),
+    CryptoModule,
   ],
   controllers: [DashboardController],
   providers: [DashboardService],
