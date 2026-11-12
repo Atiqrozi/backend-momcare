@@ -63,6 +63,8 @@ export class AuthService {
       phoneVerified: false,
     });
     // Set decrypted name for immediate use (e.g., in verification email)
+    user.fullName = dto.fullName;
+    user.fullName = dto.fullName;
     (user as UserDocument)._decryptedFullName = dto.fullName;
 
     try {
@@ -100,7 +102,11 @@ export class AuthService {
       throw error;
     }
     await this.audit(undefined, 'auth.register', user._id.toString());
-    return { verificationRequired: true, email: user.email };
+    return {
+      verificationRequired: true,
+      email: user.email,
+      ...(this.configService.get<string>('nodeEnv') !== 'production' ? { verificationCode: emailCode } : {}),
+    };
   }
 
   async login(dto: LoginDto) {
@@ -111,7 +117,7 @@ export class AuthService {
       dto.email
         ? { email: dto.email.toLowerCase() }
         : { phone: this.normalizePhone(dto.phone!) },
-    ).select('+passwordHash');
+    ).select('+passwordHash +fullName +fullNameEncrypted +legacyFullName');
     if (!user || user.status !== AccountStatus.ACTIVE) {
       throw new UnauthorizedException('Email atau password tidak valid');
     }
@@ -127,15 +133,21 @@ export class AuthService {
   }
 
   async getPublicProfile(userId: string) {
-    const user = await this.userModel.findById(userId);
+    const user = await this.userModel.findById(userId).select('+fullName +fullNameEncrypted +legacyFullName');
     if (!user) throw new UnauthorizedException('Akun tidak ditemukan');
     return { user: this.toPublicUser(user) };
   }
 
   private decryptFullName(user: UserDocument): UserDocument {
-    if (user.fullNameEncrypted) {
+    if (user.fullName) {
+      (user as UserDocument)._decryptedFullName = user.fullName;
+    } else if (user.legacyFullName) {
+      user.fullName = user.legacyFullName;
+      (user as UserDocument)._decryptedFullName = user.legacyFullName;
+    } else if (user.fullNameEncrypted) {
       try {
-        (user as UserDocument)._decryptedFullName = this.encryptionService.decrypt(user.fullNameEncrypted);
+        user.fullName = this.encryptionService.decrypt(user.fullNameEncrypted);
+        (user as UserDocument)._decryptedFullName = user.fullName;
       } catch {
         (user as UserDocument)._decryptedFullName = '[DEKRIPSI GAGAL]';
       }
@@ -157,7 +169,7 @@ export class AuthService {
       userId,
       { $set: update },
       { new: true, runValidators: true },
-    );
+    ).select('+fullName +fullNameEncrypted +legacyFullName');
     if (!user) throw new UnauthorizedException('Akun tidak ditemukan');
     return { user: this.toPublicUser(user) };
   }
@@ -333,7 +345,8 @@ export class AuthService {
   }
 
   async resendRegistrationCodes(email: string) {
-    const user = await this.userModel.findOne({ email: email.toLowerCase() });
+    const user = await this.userModel.findOne({ email: email.toLowerCase() })
+      .select('+fullName +fullNameEncrypted +legacyFullName');
     if (!user) {
       return { message: 'Jika email cocok dan verifikasi masih diperlukan, kode baru akan dikirim.' };
     }
@@ -344,8 +357,15 @@ export class AuthService {
       user.emailVerificationExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
     }
     await user.save();
-    if (emailCode) await this.sendVerificationEmail(user.email, user.fullName, emailCode);
-    return { message: 'Kode verifikasi email baru telah dikirim.', emailVerified: user.emailVerified };
+    if (emailCode) {
+      this.decryptFullName(user);
+      await this.sendVerificationEmail(user.email, user.fullName ?? user.email, emailCode);
+    }
+    return {
+      message: 'Kode verifikasi email baru telah dikirim.',
+      emailVerified: user.emailVerified,
+      ...(this.configService.get<string>('nodeEnv') !== 'production' ? { verificationCode: emailCode } : {}),
+    };
   }
 
   private createVerificationCode() {

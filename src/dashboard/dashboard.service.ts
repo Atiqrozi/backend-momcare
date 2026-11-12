@@ -22,6 +22,7 @@ import { PregnancyJournal, PregnancyJournalDocument } from '../pregnancy/schemas
 import { MedicalRecord, MedicalRecordDocument } from '../pregnancy/schemas/medical-record.schema';
 import { Vaccination, VaccinationDocument } from '../pregnancy/schemas/vaccination.schema';
 import { RiskAssessment, RiskAssessmentDocument } from '../risk-assessments/schemas/risk-assessment.schema';
+import { Facility, FacilityDocument } from '../facilities/schemas/facility.schema';
 import { LaborBagDeliveryType, LaborBagEntry, LaborBagEntryDocument } from './schemas/labor-bag.schema';
 import { calculateEstimatedDueDate } from '../common/estimated-due-date';
 import { UpsertLaborBagDto } from './dto/upsert-labor-bag.dto';
@@ -76,6 +77,7 @@ export class DashboardService {
     @InjectModel(AuditLog.name) private readonly auditModel: Model<AuditLogDocument>,
     @InjectModel(RiskAssessment.name) private readonly riskAssessmentModel: Model<RiskAssessmentDocument>,
     @InjectModel(LaborBagEntry.name) private readonly laborBagModel: Model<LaborBagEntryDocument>,
+    @InjectModel(Facility.name) private readonly facilityModel: Model<FacilityDocument>,
     private readonly encryptionService: EncryptionService,
   ) {}
 
@@ -83,21 +85,20 @@ export class DashboardService {
     const patientIds = await this.getPatientIds(user);
     const [entries, profiles, patients, providers] = await Promise.all([
       this.laborBagModel.find({ patientId: { $in: patientIds } }).sort({ estimatedDueDate: 1 }).lean(),
-      this.profileModel.find({ userId: { $in: patientIds } }).lean(),
-      this.userModel.find({ _id: { $in: patientIds }, role: Role.PREGNANT_MOTHER }).select('_id fullNameEncrypted').lean(),
-      this.userModel.find({ role: Role.DOCTOR, status: 'ACTIVE' }).select('_id fullNameEncrypted').sort({ fullNameEncrypted: 1 }).lean(),
+      this.profileModel.find({ userId: { $in: patientIds } }).select('+nikEncrypted').lean(),
+      this.userModel.find({ _id: { $in: patientIds }, role: Role.PREGNANT_MOTHER }).select('_id +fullName fullNameEncrypted +legacyFullName').lean(),
+      this.userModel.find({ role: Role.DOCTOR, status: 'ACTIVE' }).select('_id +fullName fullNameEncrypted +legacyFullName').sort({ fullName: 1 }).lean(),
     ]);
 
-    // Decrypt patient fullNames
+    // Prefer the stored plaintext fullName; otherwise fall back to legacy data or ciphertext.
     const decryptedPatients = patients.map(p => ({
       ...p,
-      fullName: p.fullNameEncrypted ? this.encryptionService.decrypt(p.fullNameEncrypted) : '[DEKRIPSI GAGAL]'
+      fullName: p.fullName ?? p.legacyFullName ?? this.decryptStoredValue(p.fullNameEncrypted) ?? '',
     }));
 
-    // Decrypt provider fullNames
     const decryptedProviders = providers.map(p => ({
       ...p,
-      fullName: p.fullNameEncrypted ? this.encryptionService.decrypt(p.fullNameEncrypted) : '[DEKRIPSI GAGAL]'
+      fullName: p.fullName ?? p.legacyFullName ?? this.decryptStoredValue(p.fullNameEncrypted) ?? '',
     }));
 
     // Decrypt NIK in profiles
@@ -140,7 +141,7 @@ export class DashboardService {
     if (!patientIds.some((id) => id.equals(patientObjectId))) throw new ForbiddenException('Pasien tidak berada dalam cakupan akses Anda');
     const [pregnantPatient, profile, provider] = await Promise.all([
       this.userModel.findOne({ _id: patientObjectId, role: Role.PREGNANT_MOTHER }).select('_id').lean(),
-      this.profileModel.findOne({ userId: patientObjectId }).lean(),
+      this.profileModel.findOne({ userId: patientObjectId }).select('+nikEncrypted').lean(),
       this.userModel.findOne({ _id: this.objectId(dto.providerId), role: Role.DOCTOR, status: 'ACTIVE' }).select('_id').lean(),
     ]);
     if (!pregnantPatient) throw new NotFoundException('Akun ibu hamil tidak ditemukan');
@@ -275,21 +276,62 @@ export class DashboardService {
     facilityId?: string,
     page = 1,
     limit = 20,
-  ) {
+  ): Promise<{
+    data: Array<Record<string, unknown>>;
+    meta: { page: number; limit: number; total: number; totalPages: number };
+  }> {
     const patientIds = await this.getPatientIds(user, providerId, facilityId);
     const resolvedPatientId = this.filterPatientId(patientId, patientIds);
     const scheduledAt = this.dateRange(from, to);
+    const [currentUser, patientFacilityIds] = user.role === Role.ADMIN
+      ? [null, [] as Types.ObjectId[]]
+      : await Promise.all([
+          this.userModel.findById(user.userId).select('facilityId').lean(),
+          this.profileModel.find({ userId: { $in: patientIds }, facilityId: { $exists: true } }).distinct('facilityId'),
+        ]);
+    const scopedFacilityIds = [...new Set([
+      ...(currentUser?.facilityId ? [currentUser.facilityId.toString()] : []),
+      ...patientFacilityIds.map((id) => id.toString()),
+    ])].map((id) => this.objectId(id));
+    const scopeFilter = user.role === Role.ADMIN
+      ? (resolvedPatientId ? { patientId: resolvedPatientId } : {})
+      : resolvedPatientId
+        ? { patientId: resolvedPatientId }
+      : {
+          $or: [
+            { patientId: { $in: patientIds } },
+            { providerId: this.objectId(user.userId) },
+            { createdBy: this.objectId(user.userId) },
+            ...(scopedFacilityIds.length ? [{ facilityId: { $in: scopedFacilityIds } }] : []),
+          ],
+        };
     const filter = {
-      patientId: resolvedPatientId ? resolvedPatientId : { $in: patientIds },
+      ...scopeFilter,
       ...(providerId ? { providerId: this.objectId(providerId) } : {}),
       ...(facilityId ? { facilityId: this.objectId(facilityId) } : {}),
       ...(status ? { status } : {}),
       ...(scheduledAt ? { scheduledAt } : {}),
     };
-    const [data, total] = await Promise.all([
+    const [appointments, total] = await Promise.all([
       this.appointmentModel.find(filter).sort({ scheduledAt: 1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.appointmentModel.countDocuments(filter),
     ]);
+    const relatedUserIds = [...new Set(appointments.flatMap((item) => [item.patientId.toString(), ...(item.providerId ? [item.providerId.toString()] : [])]))]
+      .map((id) => this.objectId(id));
+    const facilityIds = [...new Set(appointments.map((item) => item.facilityId.toString()))].map((id) => this.objectId(id));
+    const [users, facilities] = await Promise.all([
+      this.userModel.find({ _id: { $in: relatedUserIds } }).select('_id +fullName +fullNameEncrypted +legacyFullName').lean(),
+      this.facilityModel.find({ _id: { $in: facilityIds } }).select('_id name address').lean(),
+    ]);
+    const userNames = new Map(users.map((item) => [item._id.toString(), item.fullName ?? item.legacyFullName ?? this.decryptStoredValue(item.fullNameEncrypted) ?? '']));
+    const facilityMap = new Map(facilities.map((item) => [item._id.toString(), item]));
+    const data = appointments.map((item) => ({
+      ...item,
+      patientName: userNames.get(item.patientId.toString()) ?? 'Pasien',
+      providerName: item.providerId ? userNames.get(item.providerId.toString()) ?? 'Dokter belum ditentukan' : 'Dokter belum ditentukan',
+      facilityName: facilityMap.get(item.facilityId.toString())?.name ?? 'Fasilitas tidak tersedia',
+      facilityAddress: facilityMap.get(item.facilityId.toString())?.address ?? '',
+    }));
     return { data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
@@ -335,24 +377,29 @@ export class DashboardService {
   ): Promise<{ data: unknown[]; meta: { page: number; limit: number; total: number; totalPages: number } }> {
     const patientIds = await this.getPatientIds(user, providerId, facilityId);
     const userFilter = { _id: { $in: patientIds }, role: Role.PREGNANT_MOTHER };
-    let users = await this.userModel.find(userFilter).select('_id fullName email phone status role').sort({ updatedAt: -1 }).lean();
+    let users = await this.userModel.find(userFilter).select('_id +fullName fullNameEncrypted +legacyFullName email phone status role').sort({ updatedAt: -1 }).lean();
     const profiles = await this.profileModel.find({
       userId: { $in: patientIds },
       ...(pregnancyStatus ? { pregnancyStatus } : {}),
-    }).sort({ updatedAt: -1 }).lean();
+    }).select('+nikEncrypted').sort({ updatedAt: -1 }).lean();
     const profileMap = new Map(profiles.map((profile) => [profile.userId.toString(), profile]));
+    users = users.map((item) => ({
+      ...item,
+      fullName: item.fullName ?? item.legacyFullName ?? this.decryptStoredValue(item.fullNameEncrypted) ?? '',
+    }));
     if (pregnancyStatus) {
       const usersWithMatchingProfile = new Set(profiles.map((profile) => profile.userId.toString()));
       users = users.filter((item) => usersWithMatchingProfile.has(item._id.toString()));
     }
     if (search) {
-      const regex = { $regex: this.escapeRegex(search), $options: 'i' };
-      const [matchingUsers, matchingProfiles] = await Promise.all([
-        this.userModel.find({ _id: { $in: users.map((item) => item._id) }, fullName: regex, role: Role.PREGNANT_MOTHER }).select('_id').lean(),
-        this.profileModel.find({ userId: { $in: users.map((item) => item._id) }, $or: [{ nik: regex }, { bpjsNumber: regex }] }).select('userId').lean(),
-      ]);
-      const matchIds = new Set([...matchingUsers.map((item) => item._id.toString()), ...matchingProfiles.map((item) => item.userId.toString())]);
-      users = users.filter((item) => matchIds.has(item._id.toString()));
+      const term = search.toLocaleLowerCase('id-ID');
+      users = users.filter((item) => {
+        const profile = profileMap.get(item._id.toString());
+        const nik = this.decryptStoredValue(profile?.nikEncrypted);
+        return (item.fullName ?? '').toLocaleLowerCase('id-ID').includes(term)
+          || (nik?.includes(search) ?? false)
+          || (profile?.bpjsNumber?.includes(search) ?? false);
+      });
     }
     const total = users.length;
     const pageUsers = users.slice((page - 1) * limit, page * limit);
@@ -378,15 +425,15 @@ export class DashboardService {
     };
   }
 
-  async patientDetail(user: AuthenticatedUser, patientId: string) {
+  async patientDetail(user: AuthenticatedUser, patientId: string): Promise<unknown> {
     const patientObjectId = this.objectId(patientId);
     const patientIds = await this.getPatientIds(user);
     if (!patientIds.some((id) => id.equals(patientObjectId))) {
       throw new ForbiddenException('Pasien tidak berada dalam cakupan akses Anda');
     }
     const [patient, profile, appointments, medicalRecords, vaccinations, journals, latestRiskAssessment] = await Promise.all([
-      this.userModel.findById(patientObjectId).select('_id fullName email phone status role').lean(),
-      this.profileModel.findOne({ userId: patientObjectId }).lean(),
+      this.userModel.findById(patientObjectId).select('_id +fullName fullNameEncrypted +legacyFullName email phone status role').lean(),
+      this.profileModel.findOne({ userId: patientObjectId }).select('+nikEncrypted').lean(),
       this.appointmentModel.find({ patientId: patientObjectId }).sort({ scheduledAt: -1 }).limit(20).lean(),
       this.medicalRecordModel.find({ patientId: patientObjectId }).sort({ recordDate: -1 }).limit(20).lean(),
       this.vaccinationModel.find({ patientId: patientObjectId }).sort({ scheduledDate: -1 }).limit(20).lean(),
@@ -394,7 +441,15 @@ export class DashboardService {
       this.riskAssessmentModel.findOne({ patientId: patientObjectId }).sort({ assessedAt: -1 }).lean(),
     ]);
     if (!patient || !profile) throw new NotFoundException('Pasien tidak ditemukan');
-    return { patient, profile, appointments, medicalRecords, vaccinations, journals, latestRiskAssessment };
+    const decryptedPatient = {
+      ...patient,
+      fullName: patient.fullName ?? patient.legacyFullName ?? this.decryptStoredValue(patient.fullNameEncrypted) ?? '',
+    };
+    const decryptedProfile = {
+      ...profile,
+      nik: this.decryptStoredValue(profile.nikEncrypted),
+    };
+    return { patient: decryptedPatient, profile: decryptedProfile, appointments, medicalRecords, vaccinations, journals, latestRiskAssessment };
   }
 
   async patientProviders(user: AuthenticatedUser, patientId: string) {
@@ -410,12 +465,21 @@ export class DashboardService {
       ...(user.role === Role.ADMIN ? {} : { _id: { $in: ids } }),
       role: { $in: [Role.DOCTOR, Role.MIDWIFE] },
       status: 'ACTIVE',
-    }).select('_id fullName facilityId').sort({ fullName: 1 }).lean();
+    }).select('_id +fullName fullNameEncrypted +legacyFullName facilityId').sort({ fullName: 1 }).lean();
     return providers.map((provider) => ({
       _id: provider._id.toString(),
-      fullName: provider.fullName,
+      fullName: provider.fullName ?? provider.legacyFullName ?? this.decryptStoredValue(provider.fullNameEncrypted) ?? '',
       facilityId: provider.facilityId?.toString(),
     }));
+  }
+
+  private decryptStoredValue(value?: string): string | undefined {
+    if (!value) return undefined;
+    try {
+      return this.encryptionService.decrypt(value);
+    } catch {
+      return '[DEKRIPSI GAGAL]';
+    }
   }
 
   async auditLogs(

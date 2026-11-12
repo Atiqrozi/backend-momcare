@@ -15,10 +15,17 @@ export enum AccountStatus {
   DISABLED = 'DISABLED',
 }
 
-@Schema({ timestamps: true, collection: 'users' })
+@Schema({ timestamps: true, collection: 'users', toJSON: { virtuals: true }, toObject: { virtuals: true } })
 export class User {
-  @Prop({ required: true, trim: true, maxlength: 500, select: false })
+  @Prop({ required: true, trim: true, maxlength: 1100, select: false })
   fullNameEncrypted!: string;
+
+  @Prop({ trim: true, maxlength: 120, select: false })
+  fullName?: string;
+
+  // Legacy field retained so existing accounts remain readable until migrated.
+  @Prop({ trim: true, maxlength: 120, select: false })
+  legacyFullName?: string;
 
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email!: string;
@@ -65,17 +72,9 @@ export class User {
   @Prop({ type: Date })
   consentGrantedAt?: Date;
 
-  get fullName(): string {
-    return (this as unknown as UserDocument)._decryptedFullName ?? '';
-  }
-
-  set fullName(value: string) {
-    (this as unknown as UserDocument)._plainFullName = value;
-  }
 }
 
 export type UserDocument = HydratedDocument<User> & {
-  _plainFullName?: string;
   _decryptedFullName?: string;
 };
 

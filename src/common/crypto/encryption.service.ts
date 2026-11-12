@@ -28,6 +28,9 @@ export class EncryptionService {
   }
 
   decrypt(encrypted: string): string {
+    // Keep existing plaintext records readable during migration. Ciphertexts
+    // produced by this service always have three hexadecimal components.
+    if (!/^[\da-f]{24}:[\da-f]{32}:[\da-f]*$/i.test(encrypted)) return encrypted;
     const [ivHex, authTagHex, ciphertext] = encrypted.split(':');
 
     if (!ivHex || !authTagHex || !ciphertext) {

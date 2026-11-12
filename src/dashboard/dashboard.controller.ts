@@ -66,7 +66,7 @@ export class DashboardController {
     @Query('facilityId') facilityId?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
-  ) {
+  ): Promise<unknown> {
     return this.dashboardService.appointments(
       user,
       from,
@@ -139,7 +139,7 @@ export class DashboardController {
   @Get('patients/:patientId')
   @ApiOperation({ summary: 'Get a patient dashboard summary' })
   @ApiResponse({ status: 200, description: 'Patient dashboard details' })
-  patientDetail(@CurrentUser() user: AuthenticatedUser, @Param('patientId') patientId: string) {
+  patientDetail(@CurrentUser() user: AuthenticatedUser, @Param('patientId') patientId: string): Promise<unknown> {
     return this.dashboardService.patientDetail(user, patientId);
   }
 

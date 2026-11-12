@@ -9,6 +9,7 @@ import { AuditLog, AuditLogSchema } from '../users/schemas/audit-log.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { RiskAssessment, RiskAssessmentSchema } from '../risk-assessments/schemas/risk-assessment.schema';
 import { LaborBagEntry, LaborBagEntrySchema } from './schemas/labor-bag.schema';
+import { Facility, FacilitySchema } from '../facilities/schemas/facility.schema';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 import { CryptoModule } from '../common/crypto/crypto.module';
@@ -25,6 +26,7 @@ import { CryptoModule } from '../common/crypto/crypto.module';
       { name: AuditLog.name, schema: AuditLogSchema },
       { name: RiskAssessment.name, schema: RiskAssessmentSchema },
       { name: LaborBagEntry.name, schema: LaborBagEntrySchema },
+      { name: Facility.name, schema: FacilitySchema },
     ]),
     CryptoModule,
   ],

@@ -90,13 +90,13 @@ export class PregnancyService {
   ) {}
 
   async getProfile(userId: string) {
-    const profile = await this.profileModel.findOne({ userId: this.objectId(userId) }).lean();
+    const profile = await this.profileModel.findOne({ userId: this.objectId(userId) }).select('+nikEncrypted').lean();
     return this.decryptNik(profile);
   }
 
   async getTimeline(user: AuthenticatedUser, requestedPatientId?: string) {
     const patientId = await this.resolvePatientId(user, requestedPatientId);
-    const profile = await this.profileModel.findOne({ userId: patientId }).lean();
+    const profile = await this.profileModel.findOne({ userId: patientId }).select('+nikEncrypted').lean();
     const decryptedProfile = this.decryptNik(profile);
     if (!decryptedProfile) return { profile: null, currentWeek: null, events: [] };
 
@@ -122,7 +122,7 @@ export class PregnancyService {
       ...appointments.map((item) => ({ type: 'anc_appointment', date: item.scheduledAt, data: item })),
     ].sort((a, b) => a.date.getTime() - b.date.getTime());
 
-    return { profile, currentWeek, events };
+    return { profile: decryptedProfile, currentWeek, events };
   }
 
   async upsertProfile(userId: string, dto: UpsertPregnancyProfileDto) {
@@ -864,12 +864,14 @@ export class PregnancyService {
     });
   }
 
-  private decryptNik<T extends { nikEncrypted?: string; _decryptedNik?: string }>(profile: T | null): T | null {
+  private decryptNik<T extends { nikEncrypted?: string; _decryptedNik?: string; nik?: string }>(profile: T | null): T | null {
     if (profile && profile.nikEncrypted) {
       try {
         profile._decryptedNik = this.encryptionService.decrypt(profile.nikEncrypted);
+        profile.nik = profile._decryptedNik;
       } catch {
         profile._decryptedNik = '[DEKRIPSI GAGAL]';
+        profile.nik = profile._decryptedNik;
       }
     }
     return profile;

@@ -6,9 +6,10 @@ import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { PregnancyProfile, PregnancyProfileSchema } from '../pregnancy/schemas/pregnancy-profile.schema';
 import { Facility, FacilitySchema } from '../facilities/schemas/facility.schema';
+import { CryptoModule } from '../common/crypto/crypto.module';
 
 @Module({
-  imports: [MongooseModule.forFeature([
+  imports: [CryptoModule, MongooseModule.forFeature([
     { name: User.name, schema: UserSchema },
     { name: AuditLog.name, schema: AuditLogSchema },
     { name: PregnancyProfile.name, schema: PregnancyProfileSchema },

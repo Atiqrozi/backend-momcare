@@ -62,7 +62,7 @@ export class EducationService {
 
   async approve(user: AuthenticatedUser, id: string) {
     const content = await this.model.findOneAndUpdate(
-      { _id: this.objectId(id), status: EducationContentStatus.IN_REVIEW },
+      { _id: this.objectId(id), createdBy: { $ne: this.objectId(user.userId) }, status: EducationContentStatus.IN_REVIEW },
       {
         $set: {
           status: EducationContentStatus.APPROVED,
@@ -96,7 +96,7 @@ export class EducationService {
 
   async reject(user: AuthenticatedUser, id: string, note: string) {
     const content = await this.model.findOneAndUpdate(
-      { _id: this.objectId(id), status: EducationContentStatus.IN_REVIEW },
+      { _id: this.objectId(id), createdBy: { $ne: this.objectId(user.userId) }, status: EducationContentStatus.IN_REVIEW },
       { $set: { status: EducationContentStatus.DRAFT, reviewedBy: this.objectId(user.userId), reviewedAt: new Date(), reviewNote: note } },
       { new: true, runValidators: true },
     ).lean();

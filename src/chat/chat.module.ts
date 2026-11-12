@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
+import { CryptoModule } from '../common/crypto/crypto.module';
 import { PregnancyProfile, PregnancyProfileSchema } from '../pregnancy/schemas/pregnancy-profile.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { AuditLog, AuditLogSchema } from '../users/schemas/audit-log.schema';
@@ -14,7 +15,7 @@ import { ChatMessage, ChatMessageSchema } from './schemas/chat-message.schema';
 import { AppointmentSlotReservation, AppointmentSlotReservationSchema } from './schemas/appointment-slot-reservation.schema';
 
 @Module({
-  imports: [ConfigModule, MongooseModule.forFeature([
+  imports: [ConfigModule, CryptoModule, MongooseModule.forFeature([
     { name: ChatConversation.name, schema: ChatConversationSchema },
     { name: ChatMessage.name, schema: ChatMessageSchema },
     { name: PregnancyProfile.name, schema: PregnancyProfileSchema },

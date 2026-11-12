@@ -17,6 +17,7 @@ import { ChatConversation, ChatConversationDocument, ChatKind } from './schemas/
 import { ChatMessage, ChatMessageDocument } from './schemas/chat-message.schema';
 import { AppointmentSlotReservation, AppointmentSlotReservationDocument } from './schemas/appointment-slot-reservation.schema';
 import { DoctorScheduleService } from './doctor-schedule.service';
+import { EncryptionService } from '../common/crypto/encryption.service';
 
 type ReminderPayload = { appointmentId: string; scheduledAt: string; rescheduleDeadline: string; providerName: string; facilityName: string; visitType: string; resolvedAction?: string };
 const ACTIVE_APPOINTMENT_STATUSES = [AncAppointmentStatus.SCHEDULED, AncAppointmentStatus.CONFIRMED, AncAppointmentStatus.RESCHEDULED];
@@ -38,6 +39,7 @@ export class ChatService {
     @InjectModel(AppointmentSlotReservation.name) private readonly slotReservationModel: Model<AppointmentSlotReservationDocument>,
     private readonly config: ConfigService,
     private readonly doctorSchedule: DoctorScheduleService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async createConversation(user: AuthenticatedUser, dto: CreateConversationDto) {
@@ -68,7 +70,7 @@ export class ChatService {
     );
   }
 
-  async listConversations(user: AuthenticatedUser) {
+  async listConversations(user: AuthenticatedUser): Promise<unknown[]> {
     let filter: Record<string, unknown>;
     if (user.role === Role.PREGNANT_MOTHER) {
       filter = { patientId: new Types.ObjectId(user.userId) };
@@ -82,7 +84,18 @@ export class ChatService {
     } else {
       throw new ForbiddenException('Role tidak dapat mengakses percakapan');
     }
-    return this.conversationModel.find(filter).sort({ lastMessageAt: -1 }).limit(100).lean();
+    const conversations = await this.conversationModel.find(filter).sort({ lastMessageAt: -1 }).limit(100).lean();
+    const providerIds = [...new Set(conversations.flatMap((item) => item.providerId ? [item.providerId.toString()] : []))]
+      .map((id) => new Types.ObjectId(id));
+    const providers = await this.userModel.find({ _id: { $in: providerIds } })
+      .select('_id +fullName +fullNameEncrypted +legacyFullName').lean();
+    const providerNames = new Map(providers.map((provider) => [
+      provider._id.toString(), this.resolveFullName(provider) ?? 'Tenaga kesehatan',
+    ]));
+    return conversations.map((item) => ({
+      ...item,
+      providerName: item.providerId ? providerNames.get(item.providerId.toString()) ?? 'Tenaga kesehatan' : undefined,
+    }));
   }
 
   async listMessages(user: AuthenticatedUser, conversationId: string, limit = 50) {
@@ -107,8 +120,8 @@ export class ChatService {
     for (const appointment of dueAppointments) {
       if (!appointment.providerId) continue;
       const [patient, provider, facility] = await Promise.all([
-        this.userModel.findById(appointment.patientId).select('fullName').lean(),
-        this.userModel.findOne({ _id: appointment.providerId, role: Role.DOCTOR, status: 'ACTIVE' }).select('fullName').lean(),
+        this.userModel.findById(appointment.patientId).select('+fullName +fullNameEncrypted +legacyFullName').lean(),
+        this.userModel.findOne({ _id: appointment.providerId, role: Role.DOCTOR, status: 'ACTIVE' }).select('+fullName +fullNameEncrypted +legacyFullName').lean(),
         this.facilityModel.findById(appointment.facilityId).select('name').lean(),
       ]);
       if (!patient || !provider) continue;
@@ -119,7 +132,7 @@ export class ChatService {
         appointmentId: appointment._id.toString(),
         scheduledAt,
         rescheduleDeadline: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-        providerName: provider.fullName,
+        providerName: this.resolveFullName(provider) ?? 'Dokter',
         facilityName: facility?.name ?? 'Rumah sakit',
         visitType: appointment.visitType ?? 'Konsultasi kandungan',
       };
@@ -177,12 +190,14 @@ export class ChatService {
     const deadline = new Date(context.payload.rescheduleDeadline);
     const dayStart = this.jakartaDayStart(dto.date);
     if (dayStart.getTime() > deadline.getTime()) throw new BadRequestException('Tanggal pilihan harus berada dalam tujuh hari setelah pengingat dikirim.');
-    const provider = await this.userModel.findById(context.appointment.providerId).select('fullName role status').lean();
+    const provider = await this.userModel.findById(context.appointment.providerId).select('+fullName +fullNameEncrypted +legacyFullName role status').lean();
     if (!provider || provider.role !== Role.DOCTOR || provider.status !== 'ACTIVE') {
       throw new ConflictException('Dokter pada jadwal ini tidak lagi aktif. Silakan hubungi rumah sakit.');
     }
     const weekday = this.weekdayInJakarta(date);
-    const windows = await this.doctorSchedule.getDoctorWindows(provider.fullName, weekday);
+    const providerName = this.resolveFullName(provider);
+    if (!providerName) throw new ConflictException('Nama dokter belum tersedia. Silakan hubungi rumah sakit.');
+    const windows = await this.doctorSchedule.getDoctorWindows(providerName, weekday);
     if (!windows.length) return { slots: [], date: dto.date, dailyLimit: DAILY_PATIENT_LIMIT, message: 'Dokter tidak praktik pada tanggal yang dipilih.' };
 
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
@@ -487,6 +502,17 @@ export class ChatService {
 
   private formatJakartaTime(date: Date) {
     return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
+  }
+
+  private resolveFullName(user: { fullName?: string; legacyFullName?: string; fullNameEncrypted?: string }) {
+    if (user.fullName) return user.fullName;
+    if (user.legacyFullName) return user.legacyFullName;
+    if (!user.fullNameEncrypted) return undefined;
+    try {
+      return this.encryptionService.decrypt(user.fullNameEncrypted);
+    } catch {
+      return undefined;
+    }
   }
 
   private objectId(value: string) {

@@ -17,7 +17,7 @@ export class ChatController {
 
   @Get('conversations')
   @ApiOperation({ summary: 'Daftar percakapan milik pengguna atau pasien yang ditugaskan' })
-  list(@CurrentUser() user: AuthenticatedUser) {
+  list(@CurrentUser() user: AuthenticatedUser): Promise<unknown[]> {
     return this.chatService.listConversations(user);
   }
 

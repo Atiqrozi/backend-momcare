@@ -11,6 +11,7 @@ import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
 import { getRequestId } from '../common/request-context';
 import { PregnancyProfile, PregnancyProfileDocument } from '../pregnancy/schemas/pregnancy-profile.schema';
 import { Facility, FacilityDocument } from '../facilities/schemas/facility.schema';
+import { EncryptionService } from '../common/crypto/encryption.service';
 
 @Injectable()
 export class UsersService {
@@ -20,12 +21,13 @@ export class UsersService {
     @InjectModel(PregnancyProfile.name) private readonly profileModel: Model<PregnancyProfileDocument>,
     @InjectModel(Facility.name) private readonly facilityModel: Model<FacilityDocument>,
     private readonly config: ConfigService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async list(page = 1, limit = 20, role?: Role, status?: AccountStatus) {
     const filter = { ...(role ? { role } : {}), ...(status ? { status } : {}) };
     const [users, total] = await Promise.all([
-      this.userModel.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      this.userModel.find(filter).select('+fullName +fullNameEncrypted +legacyFullName').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
       this.userModel.countDocuments(filter),
     ]);
     return {
@@ -39,7 +41,7 @@ export class UsersService {
     if (await this.userModel.exists({ email })) throw new ConflictException('Email sudah terdaftar');
     const passwordHash = await bcrypt.hash(dto.password, this.config.get<number>('passwordHashRounds', 12));
     const user = await this.userModel.create({
-      fullName: dto.fullName,
+      fullNameEncrypted: this.encryptionService.encrypt(dto.fullName),
       email,
       phone: dto.phone,
       passwordHash,
@@ -50,6 +52,8 @@ export class UsersService {
       emailVerified: false,
       phoneVerified: false,
     });
+    user.fullName = dto.fullName;
+    (user as UserDocument)._decryptedFullName = dto.fullName;
     await this.audit(actor, 'user.created', user._id.toString());
     return { user: this.publicUser(user) };
   }
@@ -142,9 +146,22 @@ export class UsersService {
   }
 
   publicUser(user: UserDocument) {
+    if (user.fullName) {
+      (user as UserDocument)._decryptedFullName = user.fullName;
+    } else if (user.legacyFullName) {
+      user.fullName = user.legacyFullName;
+      (user as UserDocument)._decryptedFullName = user.legacyFullName;
+    } else if (user.fullNameEncrypted && !(user as UserDocument)._decryptedFullName) {
+      try {
+        user.fullName = this.encryptionService.decrypt(user.fullNameEncrypted);
+        (user as UserDocument)._decryptedFullName = user.fullName;
+      } catch {
+        (user as UserDocument)._decryptedFullName = '[DEKRIPSI GAGAL]';
+      }
+    }
     return {
       id: user._id.toString(),
-      fullName: user.fullName,
+      fullName: (user as UserDocument)._decryptedFullName ?? user.fullName ?? '',
       email: user.email,
       phone: user.phone,
       role: user.role,
