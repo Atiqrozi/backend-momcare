@@ -10,8 +10,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
-import { createHash, randomBytes, randomInt } from 'crypto';
-import { Model } from 'mongoose';
+import { createHash, createHmac, randomBytes, randomInt, randomUUID } from 'crypto';
+import { Model, Types } from 'mongoose';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -132,6 +132,64 @@ export class AuthService {
     return this.issueToken(user);
   }
 
+  async refresh(refreshToken: string) {
+    let payload: { userId?: string; email?: string; role?: Role; tokenUse?: string; jti?: string };
+    try {
+      payload = await this.jwtService.verifyAsync(refreshToken, { secret: this.refreshSecret() });
+    } catch {
+      throw new UnauthorizedException('Sesi sudah berakhir. Silakan masuk kembali.');
+    }
+    if (payload.tokenUse !== 'refresh' || !payload.userId || !payload.jti) {
+      throw new UnauthorizedException('Token sesi tidak valid. Silakan masuk kembali.');
+    }
+
+    const oldHash = this.hashToken(refreshToken);
+    const next = this.createRefreshToken({
+      _id: payload.userId,
+      email: payload.email ?? '',
+      role: payload.role ?? Role.PREGNANT_MOTHER,
+    });
+    const now = new Date();
+    const user = await this.userModel.findOneAndUpdate(
+      {
+        _id: payload.userId,
+        status: AccountStatus.ACTIVE,
+        refreshSessions: { $elemMatch: { tokenHash: oldHash, expiresAt: { $gt: now } } },
+      },
+      {
+        $set: {
+          'refreshSessions.$.tokenHash': this.hashToken(next.token),
+          'refreshSessions.$.expiresAt': next.expiresAt,
+        },
+      },
+      { new: true },
+    ).select('+fullName +fullNameEncrypted +legacyFullName');
+
+    if (!user || (user.role === Role.PREGNANT_MOTHER && !user.emailVerified)) {
+      throw new UnauthorizedException('Sesi sudah berakhir. Silakan masuk kembali.');
+    }
+
+    const accessToken = await this.createAccessToken(user);
+    return { accessToken, refreshToken: next.token, tokenType: 'Bearer', user: this.toPublicUser(user) };
+  }
+
+  async logout(refreshToken?: string) {
+    if (refreshToken) {
+      try {
+        const payload = await this.jwtService.verifyAsync<{ tokenUse?: string; userId?: string }>(refreshToken, { secret: this.refreshSecret() });
+        if (payload.tokenUse === 'refresh' && payload.userId) {
+          await this.userModel.updateOne(
+            { _id: payload.userId },
+            { $pull: { refreshSessions: { tokenHash: this.hashToken(refreshToken) } } },
+          );
+        }
+      } catch {
+        // Clearing the browser session remains safe when its refresh token is already expired.
+      }
+    }
+    return { loggedOut: true };
+  }
+
   async getPublicProfile(userId: string) {
     const user = await this.userModel.findById(userId).select('+fullName +fullNameEncrypted +legacyFullName');
     if (!user) throw new UnauthorizedException('Akun tidak ditemukan');
@@ -188,6 +246,7 @@ export class AuthService {
       this.configService.get<number>('passwordHashRounds', 12),
     );
     await user.save();
+    await this.userModel.updateOne({ _id: user._id }, { $set: { refreshSessions: [] } });
     await this.audit({ userId, email: user.email, role: user.role }, 'auth.password_changed');
     return { changed: true };
   }
@@ -288,17 +347,39 @@ export class AuthService {
   }
 
   private async issueToken(user: UserDocument) {
-    const payload: AuthenticatedUser = {
-      userId: user._id.toString(),
-      email: user.email,
-      role: user.role,
-    };
-    const accessToken = await this.jwtService.signAsync(payload);
+    const refresh = this.createRefreshToken(user);
+    const now = new Date();
+    await this.userModel.updateOne({ _id: user._id }, { $pull: { refreshSessions: { expiresAt: { $lte: now } } } });
+    await this.userModel.updateOne(
+      { _id: user._id },
+      { $push: { refreshSessions: { $each: [{ tokenHash: this.hashToken(refresh.token), expiresAt: refresh.expiresAt }], $slice: -10 } } },
+    );
+    const accessToken = await this.createAccessToken(user);
     return {
       accessToken,
+      refreshToken: refresh.token,
       tokenType: 'Bearer',
       user: this.toPublicUser(user),
     };
+  }
+
+  private createRefreshToken(user: { _id: Types.ObjectId | string; email: string; role: Role }) {
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const token = this.jwtService.sign(
+      { userId: user._id.toString(), email: user.email, role: user.role, tokenUse: 'refresh', jti: randomUUID() },
+      { secret: this.refreshSecret(), expiresIn: '30d' },
+    );
+    return { token, expiresAt };
+  }
+
+  private createAccessToken(user: { _id: Types.ObjectId | string; email: string; role: Role }) {
+    const payload: AuthenticatedUser = { userId: user._id.toString(), email: user.email, role: user.role };
+    return this.jwtService.signAsync(payload);
+  }
+
+  private refreshSecret() {
+    const accessSecret = this.configService.getOrThrow<string>('jwt.accessSecret');
+    return createHmac('sha256', accessSecret).update('momcare:refresh-token:v1').digest('hex');
   }
 
   private async createEmailVerificationToken(user: UserDocument) {

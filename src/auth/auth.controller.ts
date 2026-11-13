@@ -13,6 +13,7 @@ import { ConsentDto } from './dto/consent.dto';
 import { VerifyContactDto } from './dto/verify-contact.dto';
 import { VerifyPhoneDto } from './dto/verify-phone.dto';
 import { PhoneRegistrationVerificationDto, RegistrationVerificationDto, ResendRegistrationVerificationDto } from './dto/registration-verification.dto';
+import { LogoutDto, RefreshTokenDto } from './dto/refresh-token.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -33,6 +34,18 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('refresh')
+  @ApiOperation({ summary: 'Rotate refresh token and issue a new access token' })
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refreshToken);
+  }
+
+  @Post('logout')
+  @ApiOperation({ summary: 'Revoke the current refresh token' })
+  logout(@Body() dto: LogoutDto) {
+    return this.authService.logout(dto.refreshToken);
   }
 
   @Post('registration/verify-email')

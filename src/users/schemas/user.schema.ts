@@ -72,6 +72,13 @@ export class User {
   @Prop({ type: Date })
   consentGrantedAt?: Date;
 
+  @Prop({
+    type: [{ tokenHash: { type: String, required: true }, expiresAt: { type: Date, required: true } }],
+    default: [],
+    select: false,
+  })
+  refreshSessions!: Array<{ tokenHash: string; expiresAt: Date }>;
+
 }
 
 export type UserDocument = HydratedDocument<User> & {
